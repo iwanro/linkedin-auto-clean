@@ -1,52 +1,93 @@
-// index.js (Node.js backend)
+// index.js
 require("dotenv").config();
 const express = require("express");
 const jwt = require("jsonwebtoken");
-const { Configuration, OpenAIApi } = require("openai");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json());
 
-const openai = new OpenAIApi(new Configuration({ apiKey: process.env.OPENAI_KEY }));
-
-const PLANS = { free: 25, vip: Infinity };
-let usage = {};
-
-app.post("/v1/rate", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  const { text } = req.body;
-  const uid = token ? jwt.verify(token, "secret").email : "guest";
-
-  usage[uid] = usage[uid] || 0;
-  const limit = token ? PLANS.vip : PLANS.free;
-
-  if (usage[uid] >= limit) return res.status(403).json({ score: 0, remaining: 0 });
-
-  const aiRes = await openai.createCompletion({
-    model: "text-davinci-003",
-    prompt: `Rate importance of: ${text}`,
-    max_tokens: 5
-  });
-
-  const score = parseInt(aiRes.data.choices[0].text.match(/\d+/)?.[0] || "0");
-  usage[uid]++;
-  res.json({ score, remaining: limit - usage[uid] });
+const openai = new OpenAI.OpenAI({
+  apiKey: process.env.OPENAI_KEY,
 });
 
-app.get("/v1/plan", (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  let plan = "free", remaining = 25;
-  if (token) {
-    const { email } = jwt.verify(token, "secret");
-    plan = "vip";
-    remaining = Infinity;
+// Configuri freemium & VIP
+const FREE_LIMIT = 25;
+const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
+
+const userData = {}; // { userId: { plan: 'free'|'vip', usage: number, lastUsage: timestamp } }
+
+// Middleware verificare JWT
+function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization || "";
+  if (auth.startsWith("Bearer ")) {
+    const token = auth.slice(7);
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      req.user = payload;
+      if (!userData[payload.sub]) userData[payload.sub] = { plan: "vip", usage: 0, lastUsage: Date.now() };
+      return next();
+    } catch {
+      return res.status(401).json({ error: "Invalid token" });
+    }
   }
-  res.json({ plan, remaining });
+  // fallback free user
+  req.user = { sub: "free-user", plan: "free" };
+  if (!userData["free-user"]) userData["free-user"] = { plan: "free", usage: 0, lastUsage: Date.now() };
+  next();
+}
+
+// Reset usage weekly (simplified)
+setInterval(() => {
+  for (const userId in userData) {
+    if (userData[userId].plan === "free") userData[userId].usage = 0;
+  }
+}, 7 * 24 * 3600 * 1000);
+
+// POST /v1/rate
+app.post("/v1/rate", authMiddleware, async (req, res) => {
+  const user = userData[req.user.sub];
+  if (user.plan === "free" && user.usage >= FREE_LIMIT) {
+    return res.status(429).json({ error: "Free limit reached" });
+  }
+
+  const { text } = req.body;
+  if (!text || typeof text !== "string") return res.status(400).json({ error: "Missing text" });
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: `Rate importance of: ${text}` }],
+      max_tokens: 5,
+    });
+    const content = completion.choices[0].message.content;
+    const score = parseInt(content.match(/\d+/)?.[0] || "0");
+
+    if (user.plan === "free") user.usage++;
+
+    res.json({ score, remaining: user.plan === "free" ? FREE_LIMIT - user.usage : -1 });
+  } catch (e) {
+    res.status(500).json({ error: "OpenAI error", details: e.message });
+  }
 });
 
-app.get("/v1/billing/checkout", (req, res) => {
-  const jwtToken = jwt.sign({ email: "user@example.com" }, "secret", { expiresIn: "30d" });
-  res.json({ jwt: jwtToken });
+// GET /v1/plan
+app.get("/v1/plan", authMiddleware, (req, res) => {
+  const user = userData[req.user.sub];
+  res.json({
+    plan: user.plan,
+    remaining: user.plan === "free" ? FREE_LIMIT - user.usage : -1,
+  });
 });
 
-app.listen(3000, () => console.log("Backend listening on port 3000"));
+// GET /billing/checkout (simplificat: doar emite JWT VIP)
+app.get("/billing/checkout", (req, res) => {
+  // în realitate faci integrare Stripe, aici demo simplu
+  const userId = `user-${Date.now()}`;
+  const token = jwt.sign({ sub: userId, plan: "vip" }, JWT_SECRET, { expiresIn: "30d" });
+  userData[userId] = { plan: "vip", usage: 0, lastUsage: Date.now() };
+  res.json({ token });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Backend listening on port ${PORT}`));
