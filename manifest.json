@@ -1,0 +1,41 @@
+// manifest.json
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Auto-Cleaner Pro",
+  "version": "1.3",
+  "description": "Auto-clean your LinkedIn inbox with AI scoring, safe-listing, undo, and more.",
+  "permissions": [
+    "storage",
+    "identity",
+    "scripting",
+    "alarms",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://YOUR_API.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "options_page": "popup.html"
+}
